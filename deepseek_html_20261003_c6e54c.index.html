@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Моніторинг: БПЛА та ракети (real-time)</title>
+<meta name="description" content="Демонстраційна карта траєкторій з реалістичними швидкостями. Дані синтетичні.">
+
+<meta property="og:title" content="Моніторинг: БПЛА та ракети">
+<meta property="og:description" content="Демонстраційна карта траєкторій. Дані синтетичні.">
+<meta property="og:type" content="website">
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+
+<style>
+  :root {
+    --bg: #0a0e17;
+    --panel: rgba(10,14,23,0.92);
+    --border: #2a3a55;
+    --text: #e0e0e0;
+    --muted: #6a7a99;
+    --drone: #ffcc00;
+    --missile: #ff4444;
+    --ballistic: #ff00aa;
+    --impact: #ff0033;
+    --ok: #00ff88;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: 'Segoe UI', system-ui, monospace;
+    overflow: hidden;
+  }
+  #map { position: absolute; inset: 0; background: var(--bg); }
+
+  .topbar {
+    position: absolute; top: 0; left: 0; right: 0; z-index: 1000;
+    background: linear-gradient(180deg, rgba(10,14,23,0.95), rgba(10,14,23,0.7));
+    border-bottom: 1px solid var(--border);
+    padding: 8px 14px; display: flex; align-items: center; gap: 14px;
+    font-size: 13px;
+  }
+  .topbar .title { font-weight: 700; color: var(--impact); letter-spacing: 1px; }
+  .topbar .demo-badge {
+    background: #4a1a1a; color: #ff9999; padding: 2px 8px;
+    border-radius: 4px; font-size: 11px; border: 1px solid #7a2a2a;
+  }
+  .topbar .clock { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .panel {
+    position: absolute; top: 46px; right: 10px; z-index: 1000;
+    background: var(--panel); color: var(--text);
+    padding: 12px 14px; border-radius: 8px; border: 1px solid var(--border);
+    font-size: 13px; width: 320px; max-height: calc(100vh - 120px);
+    overflow-y: auto; backdrop-filter: blur(6px);
+  }
+  .panel h3 {
+    margin: 0 0 8px; color: var(--impact); font-size: 12px;
+    letter-spacing: 1.5px; text-transform: uppercase;
+  }
+  .panel h3.muted { color: var(--muted); margin-top: 14px; }
+
+  .log-entry {
+    padding: 6px 0; border-bottom: 1px solid #1a2233;
+    font-size: 12px; line-height: 1.4;
+  }
+  .log-entry:last-child { border-bottom: none; }
+  .log-entry .t { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .log-entry .meta {
+    color: var(--muted); font-size: 11px;
+    font-variant-numeric: tabular-nums; margin-top: 2px;
+  }
+  .log-entry b { color: inherit; font-weight: 600; }
+
+  .drone-t { color: var(--drone); }
+  .missile-t { color: var(--missile); }
+  .ballistic-t { color: var(--ballistic); }
+
+  .legend {
+    position: absolute; bottom: 10px; left: 10px; z-index: 1000;
+    background: var(--panel); padding: 10px 14px; border-radius: 8px;
+    border: 1px solid var(--border); font-size: 12px;
+    backdrop-filter: blur(6px);
+  }
+  .legend div { margin: 4px 0; display: flex; align-items: center; gap: 8px; }
+  .dot {
+    display: inline-block; width: 10px; height: 10px;
+    border-radius: 50%; box-shadow: 0 0 6px currentColor;
+    background: currentColor;
+  }
+
+  .controls {
+    position: absolute; bottom: 10px; right: 10px; z-index: 1000;
+    display: flex; gap: 6px; flex-wrap: wrap;
+  }
+  .controls button {
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); padding: 8px 12px;
+    border-radius: 6px; cursor: pointer; font-size: 12px;
+    font-family: inherit;
+  }
+  .controls button:hover { background: #16202f; }
+  .controls button:active { transform: scale(0.97); }
+  .controls button.active { background: #2a3a55; border-color: #4a6a95; }
+
+  .pulse {
+    animation: pulse 1.2s infinite;
+    background: var(--impact); box-shadow: 0 0 22px var(--impact);
+  }
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.7); opacity: 0.35; }
+  }
+
+  @media (max-width: 700px) {
+    .panel { width: calc(100vw - 20px); max-height: 45vh; top: auto; bottom: 60px; }
+    .legend { display: none; }
+    .topbar .clock { display: none; }
+  }
+
+  .panel::-webkit-scrollbar { width: 6px; }
+  .panel::-webkit-scrollbar-thumb { background: #2a3a55; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div class="topbar">
+  <span class="title">⚠ МОНІТОРИНГ ПОВІТРЯНИХ ЦІЛЕЙ</span>
+  <span class="demo-badge">DEMO · СИНТЕТИЧНІ ДАНІ</span>
+  <span class="clock" id="clock">--:--:--</span>
+</div>
+
+<div class="panel">
+  <h3>Активні цілі</h3>
+  <div id="targets"><div style="color:#556;">Немає активних цілей</div></div>
+  <h3 class="muted">Історія (24 год)</h3>
+  <div id="log"></div>
+</div>
+
+<div class="legend">
+  <div style="color: var(--drone);"><span class="dot"></span>БПЛА (Shahed)</div>
+  <div style="color: var(--missile);"><span class="dot"></span>Крилата ракета</div>
+  <div style="color: var(--ballistic);"><span class="dot"></span>Балістика / Циркон</div>
+  <div style="color: var(--ok);"><span class="dot"></span>Перехоплено</div>
+</div>
+
+<div class="controls">
+  <button id="btn-scale-1" class="active" title="Реальний час">×1 real</button>
+  <button id="btn-scale-10" title="×10">×10</button>
+  <button id="btn-scale-60" title="×60 (1 хв = 1 год)">×60</button>
+  <button id="btn-scale-300" title="×300 (5 хв = 1 год)">×300</button>
+  <button id="btn-restart" title="Перезапустити">↻</button>
+  <button id="btn-clear" title="Очистити історію">✕</button>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+<script>
+/* =========================================================
+   Ballistic Monitor — real-time демо
+   Швидкості реалістичні. Час = реальний (з можливістю прискорення).
+   Дані синтетичні. Не для реального використання.
+   ========================================================= */
+
+const CONFIG = {
+  HISTORY_TTL_MS: 24 * 3600 * 1000,
+  MAX_LOG_ENTRIES: 200,
+  STORAGE_KEY_HISTORY: 'bm_history_v3',
+  STORAGE_KEY_TARGETS: 'bm_targets_v3',
+  PANEL_LOG_LIMIT: 60,
+  KM_PER_DEG_LAT: 111.32,
+  TIME_SCALE: 1,
+  // Волны спавна: интервалы (мс реального времени)
+  SPAWN_WAVES: [
+    { templateIdx: 0, delayMs: 0 },          // Shahed
+    { templateIdx: 1, delayMs: 60_000 },     // Shahed-238 — через минуту
+    { templateIdx: 2, delayMs: 180_000 },    // Х-101 — через 3 минуты
+    { templateIdx: 3, delayMs: 300_000 },    // Циркон — через 5 минут
+    { templateIdx: 4, delayMs: 600_000 },    // Искандер — через 10 минут
+    { templateIdx: 0, delayMs: 1_200_000 },  // второй Shahed — через 20 минут
+  ]
+};
+
+// ===== ШАБЛОНЫ ЦЕЛЕЙ =====
+const TEMPLATES = [
+  {
+    type: 'drone', color: '#ffcc00', icon: '✈',
+    label: 'Shahed-136',
+    speedKmh: 180,
+    ttlAfterImpact: 60000,
+    path: [
+      [51.73, 35.00], [51.55, 34.60], [51.30, 34.10],
+      [51.05, 33.50], [50.80, 32.90], [50.65, 32.20],
+      [50.55, 31.60], [50.48, 31.05], [50.45, 30.52]
+    ]
+  },
+  {
+    type: 'drone', color: '#ffcc00', icon: '✈',
+    label: 'Shahed-238 (реактивний)',
+    speedKmh: 550,
+    ttlAfterImpact: 60000,
+    path: [
+      [51.73, 35.00], [51.20, 34.20], [50.70, 33.00],
+      [50.55, 31.80], [50.45, 30.52]
+    ]
+  },
+  {
+    type: 'missile', color: '#ff4444', icon: '▲',
+    label: 'Крилата Х-101',
+    speedKmh: 850,
+    ttlAfterImpact: 60000,
+    path: [
+      [51.73, 35.00], [51.20, 34.20], [50.90, 33.40],
+      [50.70, 32.50], [50.55, 31.60], [50.45, 30.52]
+    ]
+  },
+  {
+    type: 'ballistic', color: '#ff00aa', icon: '◆',
+    label: 'Циркон 3М22 (M8)',
+    speedKmh: 9800,
+    ttlAfterImpact: 60000,
+    path: [
+      [44.00, 33.00], [45.50, 32.50], [47.00, 31.60],
+      [48.50, 31.00], [49.80, 30.70], [50.45, 30.52]
+    ]
+  },
+  {
+    type: 'ballistic', color: '#ff00aa', icon: '◆',
+    label: 'Іскандер-М (~M6)',
+    speedKmh: 7400,
+    ttlAfterImpact: 60000,
+    path: [
+      [51.73, 35.00], [51.20, 34.00], [50.80, 32.80],
+      [50.55, 31.60], [50.45, 30.52]
+    ]
+  }
+];
+
+// ===== КАРТА =====
+const map = L.map('map', {
+  center: [50.45, 31.5],
+  zoom: 7,
+  zoomControl: true,
+  preferCanvas: true,
+  worldCopyJump: true
+});
+
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '&copy; OpenStreetMap &copy; CARTO',
+  subdomains: 'abcd',
+  maxZoom: 19
+}).addTo(map);
+
+// ===== СОСТОЯНИЕ =====
+const active = new Map();      // id -> state
+const history = [];            // {time, text, cls}
+let targetSeq = 0;
+let TIME_SCALE = CONFIG.TIME_SCALE;
+let rafId = null;
+let lastTs = 0;
+let spawnTimers = [];
+
+const els = {
+  targets: document.getElementById('targets'),
+  log: document.getElementById('log'),
+  clock: document.getElementById('clock')
+};
+
+// ===== ЧАСЫ В ШАПКЕ =====
+function tickClock() {
+  els.clock.textContent = new Date().toLocaleTimeString('uk-UA');
+}
+setInterval(tickClock, 1000); tickClock();
+
+// ===== ГЕОМЕТРИЯ =====
+function distanceKm(a, b) {
+  const R = 6371;
+  const dLat = (b[0] - a[0]) * Math.PI / 180;
+  const dLng = (b[1] - a[1]) * Math.PI / 180;
+  const lat1 = a[0] * Math.PI / 180;
+  const lat2 = b[0] * Math.PI / 180;
+  const h = Math.sin(dLat/2)**2 +
+            Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function totalLengthKm(path) {
+  let s = 0;
+  for (let i = 1; i < path.length; i++) s += distanceKm(path[i-1], path[i]);
+  return s;
+}
+
+function interpolate(a, b, kmFromA) {
+  const total = distanceKm(a, b);
+  if (total === 0) return [a[0], a[1]];
+  const f = Math.max(0, Math.min(1, kmFromA / total));
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+}
+
+// ===== ИКОНКИ =====
+function makeIcon(color, glyph, impact = false) {
+  const cls = impact ? 'pulse' : '';
+  const size = impact ? 22 : 18;
+  const glyphHtml = impact ? '' : `<span>${glyph}</span>`;
+  return L.divIcon({
+    className: '',
+    html: `<div class="${cls}" style="
+        width:${size}px; height:${size}px;
+        border-radius:50%; background:${color};
+        color:#000; display:flex; align-items:center;
+        justify-content:center; font-size:11px; font-weight:700;
+        box-shadow:0 0 12px ${color};">${glyphHtml}</div>`,
+    iconSize: [size, size],
+    iconAnchor: [size/2, size/2]
+  });
+}
+
+// ===== ЖУРНАЛ =====
+function addLog(text, cls = '') {
+  history.push({ time: Date.now(), text, cls });
+  while (history.length > CONFIG.MAX_LOG_ENTRIES) history.shift();
+  cleanupHistory();
+  persistHistory();
+  renderLog();
+}
+
+function cleanupHistory() {
+  const cutoff = Date.now() - CONFIG.HISTORY_TTL_MS;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].time < cutoff) history.splice(i, 1);
+  }
+}
+
+function renderLog() {
+  if (history.length === 0) {
+    els.log.innerHTML = '<div style="color:#556;font-size:12px;">Порожньо</div>';
+    return;
+  }
+  const slice = history.slice(-CONFIG.PANEL_LOG_LIMIT).reverse();
+  els.log.innerHTML = slice.map(e => {
+    const t = new Date(e.time).toLocaleTimeString('uk-UA');
+    return `<div class="log-entry">
+      <span class="t">[${t}]</span>
+      <span class="${e.cls}">${escapeHtml(e.text)}</span>
+    </div>`;
+  }).join('');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+function persistHistory() {
+  try {
+    const cutoff = Date.now() - CONFIG.HISTORY_TTL_MS;
+    const fresh = history.filter(e => e.time > cutoff);
+    localStorage.setItem(CONFIG.STORAGE_KEY_HISTORY, JSON.stringify(fresh));
+  } catch(_) {}
+}
+
+function loadHistory() {
+  try {
+    const raw = localStorage.getItem(CONFIG.STORAGE_KEY_HISTORY);
+    if (!raw) return;
+    const cutoff = Date.now() - CONFIG.HISTORY_TTL_MS;
+    JSON.parse(raw).filter(e => e.time > cutoff).forEach(e => history.push(e));
+    renderLog();
+  } catch(_) {}
+}
+
+// ===== ПЕРСИСТЕНТНОСТЬ АКТИВНЫХ ЦЕЛЕЙ =====
+function persistTargets() {
+  try {
+    const arr = [...active.values()]
+      .filter(s => !s.completed)
+      .map(s => ({
+        id: s.def.id,
+        templateIdx: s.templateIdx,
+        spawnTs: s.spawnTs,
+        // сохраняем вычисляемое состояние, чтобы продолжить ровно там, где остановились
+        lastTs: Date.now()
+      }));
+    localStorage.setItem(CONFIG.STORAGE_KEY_TARGETS, JSON.stringify(arr));
+  } catch(_) {}
+}
+
+function loadPersistedTargets() {
+  try {
+    const raw = localStorage.getItem(CONFIG.STORAGE_KEY_TARGETS);
+    if (!raw) return [];
+    return JSON.parse(raw);
+  } catch(_) { return []; }
+}
+
+function clearPersistedTargets() {
+  try { localStorage.removeItem(CONFIG.STORAGE_KEY_TARGETS); } catch(_) {}
+}
+
+// ===== СПАВН ЦЕЛИ =====
+function spawnTarget(templateIdx, opts = {}) {
+  const id = `t${++targetSeq}`;
+  const src = TEMPLATES[templateIdx];
+  if (!src) return;
+  const t = JSON.parse(JSON.stringify(src));
+  t.id = id;
+
+  const polyline = L.polyline([], {
+    color: t.color, weight: 2, opacity: 0.8,
+    dashArray: '6,6'
+  }).addTo(map);
+
+  const marker = L.marker(t.path[0], { icon: makeIcon(t.color, t.icon) })
+    .addTo(map)
+    .bindTooltip(t.label, { direction: 'top', offset: [0, -10] });
+
+  const totalKm = totalLengthKm(t.path);
+
+  const state = {
+    def: t,
+    templateIdx,
+    marker, polyline,
+    idx: 0,
+    segProgressKm: 0,
+    traveledKm: 0,
+    trail: [t.path[0]],
+    totalKm,
+    leftKm: totalKm,
+    etaMin: (totalKm / t.speedKmh) * 60,
+    spawnTs: opts.spawnTs || Date.now(),
+    completed: false
+  };
+
+  // Восстановление позиции после перезагрузки страницы
+  if (opts.resume && opts.resume.lastTs) {
+    const elapsedSec = Math.max(0, (Date.now() - opts.resume.lastTs) / 1000);
+    const advancedKm = (t.speedKmh / 3600) * elapsedSec;
+    advanceTargetByKm(state, advancedKm);
+    if (state.completed) {
+      // уже долетел пока вкладка была закрыта — не спавним
+      map.removeLayer(marker);
+      map.removeLayer(polyline);
+      addLog(`💥 ${t.label} — ціль досягла мети поки вкладка була закрита`, typeClass(t.type));
+      return;
+    }
+  }
+
+  active.set(id, state);
+  addLog(`Виявлено: ${t.label} · ${t.speedKmh} км/ч · ~${totalKm.toFixed(0)} км`,
+         typeClass(t.type));
+  renderTargets();
+}
+
+// Перемещает цель по маршруту на advancedKm километров (используется при восстановлении)
+function advanceTargetByKm(s, advancedKm) {
+  let remaining = advancedKm;
+  while (remaining > 0 && s.idx < s.def.path.length - 1) {
+    const a = s.def.path[s.idx];
+    const b = s.def.path[s.idx + 1];
+    const segKm = distanceKm(a, b);
+    const leftInSeg = segKm - s.segProgressKm;
+
+    if (remaining >= leftInSeg) {
+      remaining -= leftInSeg;
+      s.idx++;
+      s.segProgressKm = 0;
+      if (!s.trail.find(p => p[0] === b[0] && p[1] === b[1])) s.trail.push(b);
+    } else {
+      s.segProgressKm += remaining;
+      remaining = 0;
+    }
+  }
+  if (s.idx >= s.def.path.length - 1) s.completed = true;
+}
+
+function typeClass(type) {
+  return ({ drone:'drone-t', missile:'missile-t', ballistic:'ballistic-t' })[type] || '';
+}
+
+// ===== ОСНОВНОЙ ЦИКЛ (requestAnimationFrame + performance.now) =====
+function loop(ts) {
+  if (!lastTs) lastTs = ts;
+  const dtRealSec = (ts - lastTs) / 1000;
+  lastTs = ts;
+  // Ограничим dt сверху, чтобы после сна вкладки цель не «телепортировалась»
+  // мгновенно на огромное расстояние за один кадр (визуально неприятно).
+  // Но прогресс всё равно догонит — см. persistTargets/loadPersistedTargets.
+  const cappedDt = Math.min(dtRealSec, 1.0);
+  const dtSimSec = cappedDt * TIME_SCALE;
+
+  active.forEach((s, id) => {
+    if (s.completed) return;
+
+    const advanceKm = (s.def.speedKmh / 3600) * dtSimSec;
+    advanceTargetByKm(s, advanceKm);
+
+    if (s.completed) {
+      const end = s.def.path[s.def.path.length - 1];
+      s.marker.setLatLng(end);
+      s.marker.setIcon(makeIcon('#ff0033', '', true));
+      addLog(`💥 ${s.def.label} — фіксація в районі цілі`, typeClass(s.def.type));
+      renderTargets();
+      setTimeout(() => removeTarget(id), s.def.ttlAfterImpact);
+      return;
+    }
+
+    // Позиция внутри текущего сегмента
+    const a = s.def.path[s.idx];
+    const b = s.def.path[s.idx + 1];
+    const pos = interpolate(a, b, s.segProgressKm);
+    s.marker.setLatLng(pos);
+    s.polyline.setLatLngs([...s.trail, pos]);
+
+    // Обновляем оставшееся расстояние и ETA
+    let leftKm = distanceKm(pos, b);
+    for (let i = s.idx + 1; i < s.def.path.length - 1; i++) {
+      leftKm += distanceKm(s.def.path[i], s.def.path[i + 1]);
+    }
+    s.leftKm = leftKm;
+    s.traveledKm = s.totalKm - leftKm;
+    s.etaMin = (leftKm / s.def.speedKmh) * 60;
+  });
+
+  renderTargets();
+  rafId = requestAnimationFrame(loop);
+}
+
+// ===== ПАНЕЛЬ АКТИВНЫХ =====
+function formatEta(min) {
+  if (min == null) return '—';
+  if (min < 1/60) return '<1 с';
+  if (min < 1) {
+    const s = Math.round(min * 60);
+    return `${s} с`;
+  }
+  const m = Math.floor(min);
+  const s = Math.round((min - m) * 60);
+  return `${m}:${String(s).padStart(2, '0')} хв`;
+}
+
+function renderTargets() {
+  if (active.size === 0) {
+    els.targets.innerHTML = '<div style="color:#556;font-size:12px;">Немає активних цілей</div>';
+    return;
+  }
+  // Сортируем по ETA — ближайшие к цели наверху
+  const list = [...active.values()].sort((a, b) => (a.etaMin ?? 1e9) - (b.etaMin ?? 1e9));
+  els.targets.innerHTML = list.map(s => {
+    const cls = typeClass(s.def.type);
+    const status = s.completed ? '💥' : '🛫';
+    const eta = s.completed ? '—' : formatEta(s.etaMin);
+    const left = s.completed ? '' : `залиш. ${s.leftKm.toFixed(0)} км · пройдено ${s.traveledKm.toFixed(0)} км`;
+    const spd = `${s.def.speedKmh} км/ч`;
+    return `<div class="log-entry ${cls}">
+      ${status} <b>${escapeHtml(s.def.label)}</b>
+      <div class="meta">${spd} · ETA ${eta}</div>
+      <div class="meta">${left}</div>
+    </div>`;
+  }).join('');
+}
+
+function removeTarget(id) {
+  const s = active.get(id);
+  if (!s) return;
+  map.removeLayer(s.marker);
+  map.removeLayer(s.polyline);
+  active.delete(id);
+  persistTargets();
+  renderTargets();
+}
+
+// ===== СПАВН-ВОЛНЫ =====
+function scheduleWaves() {
+  clearSpawnTimers();
+  // Оставшиеся волны расписания (кроме уже прошедших)
+  CONFIG.SPAWN_WAVES.forEach(w => {
+    const tid = setTimeout(() => {
+      spawnTarget(w.templateIdx);
+      persistTargets();
+    }, w.delayMs);
+    spawnTimers.push(tid);
+  });
+  // Периодические новые Shahed каждые 45 минут (для живого демо)
+  const periodic = setInterval(() => {
+    spawnTarget(0);
+    persistTargets();
+  }, 45 * 60 * 1000);
+  spawnTimers.push(periodic);
+}
+
+function clearSpawnTimers() {
+  spawnTimers.forEach(t => clearTimeout(t));
+  spawnTimers = [];
+}
+
+// ===== УПРАВЛЕНИЕ =====
+function setScale(scale, btn) {
+  TIME_SCALE = scale;
+  document.querySelectorAll('.controls button[id^="btn-scale-"]')
+    .forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  addLog(`⏱ Масштаб часу: ×${scale}`, 'missile-t');
+}
+
+document.getElementById('btn-scale-1').addEventListener('click', e => setScale(1, e.target));
+document.getElementById('btn-scale-10').addEventListener('click', e => setScale(10, e.target));
+document.getElementById('btn-scale-60').addEventListener('click', e => setScale(60, e.target));
+document.getElementById('btn-scale-300').addEventListener('click', e => setScale(300, e.target));
+
+document.getElementById('btn-restart').addEventListener('click', () => {
+  active.forEach((_, id) => removeTarget(id));
+  clearPersistedTargets();
+  clearSpawnTimers();
+  targetSeq = 0;
+  scheduleWaves();
+  spawnTarget(0);
+  addLog('↻ Демонстрацію перезапущено', 'missile-t');
+});
+
+document.getElementById('btn-clear').addEventListener('click', () => {
+  if (!confirm('Очистити історію?')) return;
+  history.length = 0;
+  persistHistory();
+  renderLog();
+});
+
+// ===== АВТОСОХРАНЕНИЕ =====
+setInterval(() => {
+  persistHistory();
+  persistTargets();
+}, 10_000);
+
+window.addEventListener('beforeunload', () => {
+  persistHistory();
+  persistTargets();
+});
+
+// ===== СТАРТ =====
+loadHistory();
+
+// Восстанавливаем цели, которые «летели» до перезагрузки
+const persisted = loadPersistedTargets();
+if (persisted.length > 0) {
+  addLog(`↻ Відновлено ${persisted.length} цілей після перезавантаження`, 'missile-t');
+  persisted.forEach(p => {
+    spawnTarget(p.templateIdx, { resume: p });
+  });
+} else {
+  // Первый запуск — стартуем с расписания
+  spawnTarget(0); // Shahed сразу
+  scheduleWaves();
+}
+
+// Персистентность активных целей
+setInterval(persistTargets, 5000);
+
+// Запуск цикла
+rafId = requestAnimationFrame(loop);
+
+// Автоочистка истории
+setInterval(cleanupHistory, 60_000);
+
+// Дисклеймер
+console.log('%c⚠ DEMO', 'color:#ff4444;font-weight:bold;font-size:20px',
+  '\nСинтетичні дані. Не використовуйте для реальних рішень.');
+</script>
+</body>
+</html>
